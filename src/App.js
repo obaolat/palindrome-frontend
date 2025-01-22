@@ -4,12 +4,15 @@ import "./style/style.css";
 import CurrentTaskTable from "./components/CurrentTaskTable";
 import CurrentProductTable from "./components/CurrentProductTable";
 import MegaTaskWindow from "./components/MegaTaskWindow";
-import CreationForms from "./components/CreationForms"
+import MegaTaskWindow_v2 from "./components/MegaTaskWindow_v2"
+import CreationForms from "./components/CreationForms";
+import * as d3 from 'd3'
+
 import { motion, AnimatePresence } from "framer-motion";
 
 
 const axiosInstance = axios.create({
-  baseURL: "https://palindrome-backend-1.onrender.com/", // Flask backend URL
+  baseURL: "http://127.0.0.1:5000/", // Flask backend URL
 });
 
 function App() {
@@ -52,7 +55,14 @@ function App() {
   const [attachedTasks, setAttachedTasks]= useState([]);
   const [contextInputSettings, setContextInputSettings] = useState({});
   const [contextOutputSettings, setContextOutputSettings] = useState({});
-  const [showTask, setShowTask] = useState({})
+  const [showTask, setShowTask] = useState({});
+  const [chain, setChain] = useState([]);
+  const [connections, setConnections] = useState([]);
+  const [contextInputTasks, setContextInputTasks] = useState([]);
+  const [contextOutputTasks, setContextOutputTasks] = useState([]);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [pollingInterval, setPollingInterval] = useState(null);
+  
 
 
   const [taskProducts, setTaskProducts] = useState([]);
@@ -67,13 +77,51 @@ function App() {
     fetchProducts();
   }, []);
 
+
+  useEffect(() => {
+    if (selectedTask && showProducts) {
+      console.log("Refreshing input products based on backend changes.");
+      refreshProducts();
+    }
+  }, [selectedTask, refreshTrigger, showProducts]);
+  
+  useEffect(() => {
+    if (selectedTask && showProductsRight) {
+      console.log("Refreshing output products based on backend changes.");
+      refreshProductsRight();
+    }
+  }, [selectedTask, refreshTrigger, showProductsRight]);
+  
+  
+  
+  
+  
+  const startPolling = (toggleFunction) => {
+    if (!pollingInterval) {
+      const interval = setInterval(() => {
+        toggleFunction(true); // Call with `isRefresh` to avoid unintentional toggle-off
+      }, 5000); // Poll every 5 seconds
+      setPollingInterval(interval);
+      console.log("Polling started for backend updates.");
+    }
+  };
+  
+  // Function to Stop Polling
+  const stopPolling = () => {
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      setPollingInterval(null);
+      console.log("Polling stopped.");
+    }
+  };
+
   /*useEffect(() => {
     if (selectedTask) {
       fetchTaskDeployments(selectedTask.id);
   
     }
   }, [selectedTask]); */
-
+/*
   useEffect(() => {
     if (selectedTask && showProducts) {
       console.log("Refreshing input products due to settings table change or toggle.");
@@ -87,10 +135,8 @@ function App() {
       fetchAndUpdateOutputProducts();
     }
   }, [settingsTableChanged, selectedTask, showProductsRight]);
-  
-  useEffect(() => {
-    console.log("Rectangles updated:", rectangles);
-  }, [rectangles]);
+  */
+
 
 
   const fetchTasks = async () => {
@@ -113,6 +159,8 @@ function App() {
     }
   };
 
+
+
 /*
 const fetchTasksForProduct = async (productId, type) => {
   try {
@@ -126,20 +174,20 @@ const fetchTasksForProduct = async (productId, type) => {
 };
 
 */
-const fetchTasksForProduct = async (type) => {
-  console.log(selectedOval, selectedOval.id, selectedOval.instance_id)
-  if (!selectedOval || !selectedOval.id || !selectedOval.instance_id) {
+const fetchTasksForProduct = async (type, product) => {
+  console.log(product, product.id, product.instance_id)
+  if (!product || !product.id || !product.instance_id) {
     console.error("No product or instance selected for fetching tasks.");
    return ;
   }
 
   try {
     const response = await axiosInstance.get(
-      `/api/products/${selectedOval.id}/instance/${selectedOval.instance_id}/tasks`,
+      `/api/products/${product.id}/instance/${product.instance_id}/tasks`,
       { params: { type } }
     );
     setRelatedTasks(response.data || []);
-    console.log(`Tasks fetched successfully for product ${selectedProduct.id} (type: ${type}).`);
+    console.log(`Tasks fetched successfully for product ${product.id} (type: ${type}).`);
   } catch (error) {
     console.error("Error fetching tasks for selected product:", error);
   }
@@ -167,14 +215,15 @@ const handleProductSelection = async (productId) => {
     const response = await axiosInstance.post(`/api/products/${productId}/instance`);
     const { instance_id } = response.data;
 
-    setSelectedProduct({id: productId, name: product.name, instanceId: instance_id, deployment_state: "V", side:"left"});
-    console.log("Product selected:", { id: productId, instanceId: instance_id });
+    setSelectedProduct({id: productId, name: product.name, instance_id: instance_id, deployment_state: "V", side:"left"});
+    console.log("Product selected:", { id: productId, instance_id: instance_id });
     setSelectedTask(null);
     console.log(`New instance creared for product ${productId}:`, instance_id);
   }catch(error) {
     console.error("Error creating context for task:", error.response?.data || error.message)
   }
 };
+
 
 
 const handleTaskSelection = async (taskId) => {
@@ -365,15 +414,15 @@ const addToSettingsTable = async (product) => {
     return;
   }
 
-  const { id: taskId, contextId } = selectedTask;
+  const { id: taskId, context_id } = selectedTask;
 
-  if (!contextId) {
+  if (!context_id) {
     console.error("No context available for this task.");
     return;
   }
 
   // Get the input settings for the current context
-  const currentInputSettings = contextInputSettings[contextId] || [];
+  const currentInputSettings = contextInputSettings[context_id] || [];
 
   if (currentInputSettings.some((p) => p.id === product.id)) {
     console.warn("Product is already added to this context.");
@@ -386,13 +435,16 @@ const addToSettingsTable = async (product) => {
     const { instance_id } = instanceResponse.data;
 
     // Step 2: Add the product (with the instance_id) to the task
-    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, {
+    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, {
       product_id: product.id,
       instance_id: instance_id, // Pass the new instance ID
       type: "input",
       action: "add",
     });
 
+
+
+    setRefreshTrigger((prev) => prev + 1);
 
 
     // Step 3: Update input settings for the specific context
@@ -402,7 +454,7 @@ const addToSettingsTable = async (product) => {
     ];
     setContextInputSettings((prev) => ({
       ...prev,
-      [contextId]: updatedInputSettings,
+      [context_id]: updatedInputSettings,
     }));
 
     // Optionally update any derived states (like deployed products)
@@ -412,7 +464,7 @@ const addToSettingsTable = async (product) => {
     setDeployedInputProducts(updatedDeployedInputProducts);
 
     console.log(
-      `Product ${product.name} (instance: ${instance_id}) added to input settings for context ${contextId}.`
+      `Product ${product.name} (instance: ${instance_id}) added to input settings for context ${context_id}.`
     );
   } catch (error) {
     console.error(
@@ -468,15 +520,15 @@ const addToSettingsTable = async (product) => {
       return;
     }
   
-    const { id: taskId, contextId } = selectedTask;
+    const { id: taskId, context_id } = selectedTask;
   
-    if (!contextId) {
+    if (!context_id) {
       console.error("No context available for this task.");
       return;
     }
   
     // Get the output settings for the current context
-    const currentOutputSettings = contextOutputSettings[contextId] || [];
+    const currentOutputSettings = contextOutputSettings[context_id] || [];
   
     if (currentOutputSettings.some((p) => p.id === product.id)) {
       console.warn("Product is already added to this context.");
@@ -488,12 +540,14 @@ const addToSettingsTable = async (product) => {
       const { instance_id } = instanceResponse.data;
   
     axiosInstance
-      .patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, {
+      .patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, {
         product_id: product.id,
         instance_id: instance_id,
         type: "output",
         action: "add",
       });
+      setRefreshTrigger((prev) => prev + 1);
+
         // Update output settings for the specific context
         const updatedOutputSettings = [
           ...currentOutputSettings, 
@@ -501,7 +555,7 @@ const addToSettingsTable = async (product) => {
         ];
         setContextOutputSettings((prev) => ({
           ...prev,
-          [contextId]: updatedOutputSettings,
+          [context_id]: updatedOutputSettings,
         }));
   
         // Optionally update any derived states (like deployed products)
@@ -510,7 +564,7 @@ const addToSettingsTable = async (product) => {
         );
         setDeployedOutputProducts(updatedDeployedOutputProducts);
   
-        console.log(`Product ${product.name} with ${instance_id}added to output settings for context ${contextId}.`);
+        console.log(`Product ${product.name} with ${instance_id}added to output settings for context ${context_id}.`);
       
     } catch(error) {
         console.error(
@@ -544,8 +598,37 @@ const addToSettingsTable = async (product) => {
     }
   };
   
+  const fetchUpdates = async () => {
+    if (selectedTask?.id && selectedTask?.context_id) {
+      console.log("Fetching updates for selected task:", selectedTask);
   
+      try {
+        const response = await axiosInstance.get(`/api/tasks/${selectedTask.id}/contexts/${selectedTask.context_id}/products`);
+        const { input_products, output_products } = response.data;
   
+        setContextInputSettings((prev) => ({
+          ...prev,
+          [selectedTask.context_id]: input_products,
+        }));
+  
+        setContextOutputSettings((prev) => ({
+          ...prev,
+          [selectedTask.context_id]: output_products,
+        }));
+  
+        console.log("Input and Output settings updated:", { input_products, output_products });
+      } catch (error) {
+        console.error("Error fetching updates:", error);
+      }
+    }
+  };
+  
+  /*
+  useEffect(() => {
+    console.log("Refresh Trigger changed. Fetching updates...");
+    fetchUpdates();
+  }, [refreshTrigger]); // Re-fetch when refreshTrigger changes
+  */
   
   const handleTaskCreation = async (taskData) => {
     if (!taskData.name || !taskData.start_time || !taskData.end_time) {
@@ -579,7 +662,7 @@ const addToSettingsTable = async (product) => {
  const handleTaskCreationauto = async (e) => {
     e.preventDefault();
   
-    console.log("Task creation initiated.");
+    console.log("Task creation initiated.", selectedProduct);
   
     // Ensure selectedProduct and taskType are valid
     if (!selectedProduct || !taskType) {
@@ -623,22 +706,19 @@ const addToSettingsTable = async (product) => {
         console.log(selectedProduct.id)
         await axiosInstance.patch(`/api/tasks/${createdTaskId}/contexts/${context_id}/products`, {
           type: taskType === "input" ? "output" : "input",
-          product_id: selectedOval.id,
+          product_id: selectedProduct.id,
           action: "add",
-          instance_id:selectedOval.instance_id
+          instance_id:selectedProduct.instance_id
         });
 
             console.log(`Task ${createdTaskId} successfully added to ${taskType} settings with context ${context_id}.`);
 
 
-          setAttachedTasks((prev) => [...prev, { ...newTask, contextId: context_id }]);
+          setAttachedTasks((prev) => [...prev, { ...newTask, context_id: context_id }]);
           setSettingsTableChanged((prev) => !prev); // Trigger reactivity
-          setRelatedTasks((prev) => [...prev, { ...newTask, contextId: context_id }]);
+          setRelatedTasks((prev) => [...prev, { ...newTask, context_id: context_id }]);
 
-          const contextsResponse = await axiosInstance.get(`/api/products/${selectedOval.id}/contexts`);
-          const allContexts = contextsResponse.data.map((ctx) => ctx.context_id);
-      
-          console.log("All related contexts:", allContexts);
+
       
           // Iterate through all contexts and fetch tasks
       
@@ -666,11 +746,11 @@ const addToSettingsTable = async (product) => {
   };
 
   
-  const addTaskToProduct = async (task) => {
-    console.log("Selected Product in addTaskToProduct:", selectedProduct);
+  const addTaskToProduct = async (task, product) => {
+    console.log("Selected Product in addTaskToProduct:", product);
 
     console.log(selectedProduct)
-    if (!selectedOval || !taskType) {
+    if (!product || !taskType) {
       console.error("No product selected or taskType not set.");
       console.log("Selected Product:", selectedOval);
       console.log("Task Type:", taskType);
@@ -688,31 +768,33 @@ const addToSettingsTable = async (product) => {
   
       // Step 2: Send the association to the backend
       console.log(`Adding task ${task.id} (context: ${context_id}) to ${taskType} settings for product ${setSelectedProduct.id}`);
-      console.log(selectedProduct.id)
+      console.log(product)
       await axiosInstance.patch(`/api/tasks/${task.id}/contexts/${context_id}/products`, {
-        product_id: selectedOval.id,
-        instance_id: selectedOval.instance_id,
+        product_id: product.id,
+        instance_id: product.instance_id,
         type: taskType === "input" ? "output" : "input",
         action: "add",
       });
   
       console.log(`Task ${task.id} successfully added to ${taskType} settings with context ${context_id}.`);
+
+
   
       // Step 3: Update frontend state
-      setAttachedTasks((prev) => [...prev, { ...task, contextId: context_id }]);
+      setAttachedTasks((prev) => [...prev, { ...task, context_id: context_id }]);
       setSettingsTableChanged((prev) => !prev); // Trigger reactivity
-      setRelatedTasks((prev) => [...prev, { ...task, contextId: context_id }]);
+      setRelatedTasks((prev) => [...prev, { ...task, context_id: context_id }]);
       console.log(task, context_id)
 
 
   
       if (taskType === "input") {
-        setOutputSettings((prev) => [...prev, { ...task, contextId: context_id }]);
+        setOutputSettings((prev) => [...prev, { ...task, context_id: context_id }]);
       } else if (taskType === "output") {
-        setInputSettings((prev) => [...prev, { ...task, contextId: context_id }]);
+        setInputSettings((prev) => [...prev, { ...task, context_id: context_id }]);
       }
   
-     fetchTasksForProduct(taskType, selectedProduct.id, selectedProduct.instance_id, );
+     fetchTasksForProduct(taskType, product.id, product.instance_id, );
     
      console.log("Updated Related Tasks:", relatedTasks);
 
@@ -766,6 +848,7 @@ const addTaskToProduct = async (task) => {
  /* 
   const addProductToTask = async (autoAddTo = null) => {
     try {
+    
       // Create the product
       const response = await axiosInstance.post("/api/products", newProduct);
   
@@ -816,9 +899,9 @@ const addTaskToProduct = async (task) => {
       return;
     }
   
-    const { id: taskId, contextId } = selectedTask;
+    const { id: taskId, context_id } = selectedTask;
   
-    if (!contextId) {
+    if (!context_id) {
       console.error("No context available for the selected task.");
       return;
     }
@@ -856,7 +939,7 @@ const addTaskToProduct = async (task) => {
 
 
   
-        await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, {
+        await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, {
           product_id,
           instance_id:instance_id,
           type: autoAddTo, // "input" or "output"
@@ -869,15 +952,15 @@ const addTaskToProduct = async (task) => {
         // Update the context-specific settings
         const updateSettings = autoAddTo === "input" ? setContextInputSettings : setContextOutputSettings;
         updateSettings((prev) => {
-          const currentSettings = prev[contextId] || [];
+          const currentSettings = prev[context_id] || [];
           return {
             ...prev,
-            [contextId]: [...currentSettings, createdProduct],
+            [context_id]: [...currentSettings, createdProduct],
           };
         });
   
         console.log(
-          `Updated ${autoAddTo} settings for context ${contextId}:`,
+          `Updated ${autoAddTo} settings for context ${context_id}:`,
           autoAddTo === "input" ? contextInputSettings : contextOutputSettings
         );
       }
@@ -904,14 +987,14 @@ const addTaskToProduct = async (task) => {
   return;
   }
 
-  const {id: taskId, contextId} = selectedTask;
+  const {id: taskId, context_id} = selectedTask;
 
-  if (!contextId) {
+  if (!context_id) {
     console.error("No context available for this task.")
     return;
   }
 
-  const productWithInstance = (contextInputSettings[contextId] || []).find(
+  const productWithInstance = (contextInputSettings[context_id] || []).find(
     (p) => p.id === productId
   );
 
@@ -931,26 +1014,30 @@ const addTaskToProduct = async (task) => {
       action: "update_state",
       state: newState, // Update state in the backend
       };
-      await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, payload);
+
+      
+      await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, payload);
+
+      setRefreshTrigger((prev) => prev + 1);
 
       setContextInputSettings((prev) => {
-        const updatedContextInputSettings = (prev[contextId] || []).map((product) =>
+        const updatedContextInputSettings = (prev[context_id] || []).map((product) =>
           product.id === productId ? { ...product, deployment_state: newState } : product
         );
   
         return {
           ...prev,
-          [contextId]: updatedContextInputSettings,
+          [context_id]: updatedContextInputSettings,
         };
     });
 
     // Update state locally for immediate feedback
     
     setDeployedInputProducts((prev) =>
-    (contextInputSettings[contextId] || []).filter((p) => p.deployment_state === "V")
+    (contextInputSettings[context_id] || []).filter((p) => p.deployment_state === "V")
   );
 
-   console.log(`Deployment status toggled for product ${productId} in context ${contextId}.`);
+   console.log(`Deployment status toggled for product ${productId} in context ${context_id}.`);
   } catch (error) {
     console.error(
       "Error toggling deployment status:",
@@ -966,13 +1053,13 @@ const toggleOutputDeploymentStatus = async (productId, currentState) => {
     return;
   }
 
-  const { id: taskId, contextId } = selectedTask;
+  const { id: taskId, context_id } = selectedTask;
 
-  if (!contextId) {
+  if (!context_id) {
     console.error("No context available for this task.");
     return;
   }
-  const productWithInstance = (contextOutputSettings[contextId] || []).find(
+  const productWithInstance = (contextOutputSettings[context_id] || []).find(
     (p) => p.id === productId
   );
 
@@ -994,26 +1081,28 @@ const toggleOutputDeploymentStatus = async (productId, currentState) => {
       state: newState,
     };
 
-    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, payload);
+    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, payload);
+
+    setRefreshTrigger((prev) => prev + 1);
 
     // Update state locally for the specific context
     setContextOutputSettings((prev) => {
-      const updatedContextOutputSettings = (prev[contextId] || []).map((product) =>
+      const updatedContextOutputSettings = (prev[context_id] || []).map((product) =>
         product.id === productId ? { ...product, deployment_state: newState } : product
       );
 
       return {
         ...prev,
-        [contextId]: updatedContextOutputSettings,
+        [context_id]: updatedContextOutputSettings,
       };
     });
 
     // Optionally update deployed products for the context
     setDeployedOutputProducts((prev) =>
-      (contextOutputSettings[contextId] || []).filter((p) => p.deployment_state === "V")
+      (contextOutputSettings[context_id] || []).filter((p) => p.deployment_state === "V")
     );
 
-    console.log(`Deployment status toggled for product ${productId} in context ${contextId}.`);
+    console.log(`Deployment status toggled for product ${productId} in context ${context_id}.`);
   } catch (error) {
     console.error(
       "Error toggling deployment status:",
@@ -1061,14 +1150,14 @@ const deleteFromSettingsTable = async (productId) => {
     return;
   }
 
-  const { id: taskId, contextId } = selectedTask;
+  const { id: taskId, context_id } = selectedTask;
 
-  if (!contextId) {
+  if (!context_id) {
     console.error("No context available for this task.");
     return;
   }
 
-  const productWithInstance = (contextInputSettings[contextId] || []).find(
+  const productWithInstance = (contextInputSettings[context_id] || []).find(
     (p) => p.id === productId
   );
 
@@ -1081,22 +1170,24 @@ const deleteFromSettingsTable = async (productId) => {
 
   try {
     // Make a POST request to the backend to delete the product
-    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, {
+    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, {
       product_id: productId,
       instance_id: instance_id, // Pass the instance ID for this product
       type: "input",
       action: "delete",
     });
 
+    setRefreshTrigger((prev) => prev + 1);
+
     // Update context-specific input settings locally
     setContextInputSettings((prev) => {
-      const updatedSettings = (prev[contextId] || []).filter(
+      const updatedSettings = (prev[context_id] || []).filter(
         (product) => product.id !== productId
       );
-      return { ...prev, [contextId]: updatedSettings };
+      return { ...prev, [context_id]: updatedSettings };
     });
 
-    console.log(`Product ${productId} deleted from input settings for context ${contextId}.`);
+    console.log(`Product ${productId} deleted from input settings for context ${context_id}.`);
   } catch (error) {
     console.error("Error deleting product from input settings table:", error.response?.data || error.message);
   }
@@ -1107,14 +1198,14 @@ const deleteFromOutputSettingsTable = async (productId) => {
   if (!selectedTask) return;
 
 
-  const { id: taskId, contextId } = selectedTask;
+  const { id: taskId, context_id } = selectedTask;
 
-  if (!contextId) {
+  if (!context_id) {
     console.error("No context available for this task.");
     return;
   }
   
-  const productWithInstance = (contextOutputSettings[contextId] || []).find(
+  const productWithInstance = (contextOutputSettings[context_id] || []).find(
     (p) => p.id === productId
   );
 
@@ -1126,37 +1217,29 @@ const deleteFromOutputSettingsTable = async (productId) => {
   const { instance_id } = productWithInstance
 
   try {
-    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${contextId}/products`, {
+    await axiosInstance.patch(`/api/tasks/${taskId}/contexts/${context_id}/products`, {
       product_id: productId,
       instance_id: instance_id,
-      context_id:contextId,
+      context_id:context_id,
       type: "output",  // Ensure this matches your backend validation
       action: "delete",  // Indicates a delete operation
     });
 
+    setRefreshTrigger((prev) => prev + 1);
     // Update state locally
     setContextOutputSettings((prev) => {
-      const updatedSettings = (prev[contextId] || []).filter(
+      const updatedSettings = (prev[context_id] || []).filter(
         (product) => product.id !== productId
       );
-      return { ...prev, [contextId]: updatedSettings };
+      return { ...prev, [context_id]: updatedSettings };
     });
 
-    console.log(`Product ${productId} deleted from output settings for context ${contextId}.`);
+    console.log(`Product ${productId} deleted from output settings for context ${context_id}.`);
   } catch (error) {
     console.error("Error deleting product from output settings table:", error.response?.data || error.message);
   }
 };
 
-
-
-
-  const toggleSettings = () => {
-    setShowSettings((prev) => !prev);
-  };
-  const toggleSettingsRight = () => {
-    setShowSettingsRight((prev) => !prev);
-  };
 
 /*  
 
@@ -1189,6 +1272,7 @@ const deleteFromOutputSettingsTable = async (productId) => {
 };
 */
 const deleteTaskFromProduct = async (taskId, productId) => {
+  console.log(taskId, productId)
   if (!taskId || !productId) {
     console.error("Task ID or Product ID is missing");
     return;
@@ -1241,7 +1325,7 @@ const fetchProductsForTask = async (taskId) => {
     console.error("Error fetching products for task:", error.message);
   }
 };
-
+/*
 const toggleProducts = async () => {
   console.log("Selected Task in toggleProducts before check:", selectedTask);
 
@@ -1290,117 +1374,630 @@ const toggleProducts = async () => {
     console.error("Error toggling output products:", error);
   }
 };
+*/
+
+const updateChainWithNewProducts = (products, connections, toggleSide) => {
+  setChain((prevChain) => {
+    const updatedChain = prevChain.filter(
+      (node) => !(node.type === "product" && node.context_id === selectedTask.context_id)
+    );
+    return [...updatedChain, ...products];
+  });
+
+  setConnections((prevConnections) => {
+    const updatedConnections = prevConnections.filter(
+      (conn) =>
+        !products.some(
+          (product) => conn.to.x === product.x && conn.to.y === product.y + 25
+        )
+    );
+
+    return [...updatedConnections, ...connections];
+  });
+};
+
+const updateConnections = () => {
+  const svg = d3.select(".chain-visualization").select("svg");
+
+  if (!svg.empty()) {
+    svg.remove();
+  }
+
+  const newSvg = d3
+    .select(".chain-visualization")
+    .append("svg")
+    .attr("width", "100%")
+    .attr("height", "100%")
+    .style("position", "absolute");
+
+  connections.forEach((conn) => {
+    newSvg
+      .append("line")
+      .attr("x1", conn.from.x)
+      .attr("y1", conn.from.y)
+      .attr("x2", conn.to.x)
+      .attr("y2", conn.to.y)
+      .attr("stroke", "black")
+      .attr("stroke-width", 2);
+  });
+};
 
 
-/*
-const toggleProductsright = async () => {
-  console.log("Selected Task in toggleProducts before check:", selectedTask);
+const toggleProducts = async () => {
+  console.log("Selected Task in toggleProducts:", selectedTask);
 
   if (!selectedTask) {
-    console.warn("No task selected for toggling output products");
+    console.warn("No task selected for toggling input products.");
     return;
   }
 
-  const shouldShow = !showProducts; // Determine the toggle state
-  console.log("Toggling output products. Current state:", shouldShow);
+  const shouldShowInput = !showProducts; // Independent toggle state for input products
+  console.log("Toggling input products. Current state:", shouldShowInput);
 
   try {
-    const taskOutputProducts = contextOutputSettings[selectedTask.contextId] || [];
-    console.log("Output products for task:", taskOutputProducts);
+    if (shouldShowInput) {
+      const response = await axiosInstance.get(
+        `/api/tasks/${selectedTask.id}/contexts/${selectedTask.context_id}/products`
+      );
+      const { input_products } = response.data;
 
-    const filteredProducts = taskOutputProducts
-    .filter((product) => product.deployment_state === "V")
-    .map((product)=> ({...product, side:"right"}));
+      const filteredProducts = input_products
+        .filter((product) => product.deployment_state === "V")
+        .map((product, index) => ({
+          ...product,
+          type: "product",
+          x: selectedTask.x - 250, // Input products to the left
+          y: selectedTask.y + index * 70,
+          context_id: selectedTask.context_id,
+          key: `${selectedTask.context_id}-input-${product.instance_id}`,
+        }));
 
-    if (shouldShow) {
-      // Set the output products as selected
-      setSelectedProduct(shouldShow ? filteredProducts : []);
-      setShowProducts(shouldShow)
-      console.log("Selected output products set:", taskOutputProducts);
+      setChain((prevChain) => {
+        const updatedChain = prevChain.filter(
+          (node) =>
+            !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("input"))
+        );
+        return [...updatedChain, ...filteredProducts];
+      });
+
+      setConnections((prevConnections) => {
+        const newConnections = filteredProducts.map((product) => ({
+          from: { x: product.x + 75, y: product.y + 30 },
+          to: { x: selectedTask.x - 10, y: selectedTask.y + 30 },
+        }));
+        return [...prevConnections, ...newConnections];
+      });
+
+      console.log("Input products added to chain:", filteredProducts);
+
+      if (filteredProducts.length > 0) {
+        setSelectedProduct(filteredProducts[0]);
+        console.log("Selected Product updated:", filteredProducts[0]);
+      }
     } else {
-      // Clear the selected products when toggling off
-      setSelectedProduct([]);
-      console.log("Selected output products cleared.");
+      // Clear input products and their connections
+      setChain((prevChain) =>
+        prevChain.filter(
+          (node) =>
+            !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("input"))
+        )
+      );
+
+      setConnections((prevConnections) =>
+        prevConnections.filter(
+          (conn) =>
+            !chain.some(
+              (node) =>
+                node.type === "product" &&
+                node.context_id === selectedTask.context_id &&
+                node.key?.includes("input") &&
+                conn.from.x === node.x + 75 &&
+                conn.from.y === node.y + 30
+            )
+        )
+      );
+
+      console.log("Input products and connections cleared.");
+    }
+    
+    setShowProducts(shouldShowInput); // Update toggle state
+
+    setChain((prevChain) =>
+      prevChain.map((node) =>
+        node.id === selectedTask.id
+          ? { ...node, showInputProducts: shouldShowInput }
+          : node
+      )
+    );
+  } catch (error) {
+    console.error("Error toggling input products:", error);
+  }
+};
+
+
+
+const toggleProductsRight = async () => {
+  console.log("Selected Task in toggleProductsRight:", selectedTask);
+
+  if (!selectedTask) {
+    console.warn("No task selected for toggling output products.");
+    return;
+  }
+
+  const shouldShowRight = !showProductsRight; // Independent toggle state for output products
+  console.log("Toggling output products. Current state:", shouldShowRight);
+
+  try {
+    if (shouldShowRight) {
+      const response = await axiosInstance.get(
+        `/api/tasks/${selectedTask.id}/contexts/${selectedTask.context_id}/products`
+      );
+      const { output_products } = response.data;
+
+      if (!output_products || !Array.isArray(output_products)) {
+        console.warn("No output products found or invalid format:", output_products);
+        return;
+      }
+      console.log("Extracted output products:", output_products);
+
+      const filteredProducts = output_products
+        .filter((product) => product.deployment_state === "V")
+        .map((product, index) => ({
+          ...product,
+          type: "product",
+          x: selectedTask.x + 150, // Output products to the right
+          y: selectedTask.y + index * 70,
+          context_id: selectedTask.context_id,
+          key: `${selectedTask.context_id}-output-${product.instance_id}`,
+        }));
+
+      setChain((prevChain) => {
+        const updatedChain = prevChain.filter(
+          (node) =>
+            !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("output"))
+        );
+        return [...updatedChain, ...filteredProducts];
+      });
+
+      // Automatically set the first output product as the selected product
+      if (filteredProducts.length > 0) {
+        setSelectedProduct(filteredProducts[0]);
+        console.log("Selected Product updated:", filteredProducts[0]);
+      }
+
+      setConnections((prevConnections) => {
+        const newConnections = filteredProducts.map((product) => ({
+          from: { x: selectedTask.x + 60, y: selectedTask.y + 30 },
+          to: { x: product.x + 75, y: product.y + 30 },
+        }));
+        return [...prevConnections, ...newConnections];
+      });
+
+      console.log("Output products added to chain:", filteredProducts);
+    } else {
+      // Clear output products and their connections
+      setChain((prevChain) =>
+        prevChain.filter(
+          (node) =>
+            !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("output"))
+        )
+      );
+
+      setConnections((prevConnections) =>
+        prevConnections.filter(
+          (conn) =>
+            !chain.some(
+              (node) =>
+                node.type === "product" &&
+                node.context_id === selectedTask.context_id &&
+                node.key?.includes("output") &&
+                conn.to.x === node.x + 75 &&
+                conn.to.y === node.y + 30
+            )
+        )
+      );
+
+      console.log("Output products and connections cleared.");
     }
 
-    // Update the visibility toggle
-    setShowProducts(shouldShow);
+    setShowProductsRight(shouldShowRight); // Update toggle state
+    setTimeout(() => updateConnections(), 0); // Ensure connections are updated after chain state changes
+
   } catch (error) {
     console.error("Error toggling output products:", error);
   }
 };
 
-*/
-
-const toggleProductsright = async () => {
-  console.log("Selected Task in toggleProducts before check:", selectedTask, selectedTask.id, selectedTask.contextId);
-
+const refreshProducts = async () => {
   if (!selectedTask) {
-    console.warn("No task selected for toggling output products");
+    console.warn("No task selected for refreshing input products.");
     return;
   }
 
-  const shouldShow = !showProducts; // Determine the toggle state
-  console.log("Toggling output products. Current state:", shouldShow);
-
   try {
-    if (shouldShow) {
-      // Use axiosInstance to fetch data from the backend
-      const response = await axiosInstance.get(`/api/tasks/${selectedTask.id}/contexts/${selectedTask.contextId}/products`);
-      console.log("Full response from axios:", response);
+    const response = await axiosInstance.get(
+      `/api/tasks/${selectedTask.id}/contexts/${selectedTask.context_id}/products`
+    );
+    const { input_products } = response.data;
 
-      // Extract the data
-      const { output_products } = response.data;
-      if (!output_products || !Array.isArray(output_products)) {
-        console.warn("No output products found or invalid format:", output_products);
-        setSelectedProduct([]); // Clear products if no valid output_products found
-        return;
+    const filteredProducts = input_products
+      .filter((product) => product.deployment_state === "V")
+      .map((product, index) => ({
+        ...product,
+        type: "product",
+        x: selectedTask.x - 250, // Input products to the left
+        y: selectedTask.y + index * 70,
+        context_id: selectedTask.context_id,
+        key: `${selectedTask.context_id}-input-${product.instance_id}`,
+      }));
+
+      if (filteredProducts.length > 0) {
+        setSelectedProduct(filteredProducts[0]);
+        console.log("Selected Product updated:", filteredProducts[0]);
       }
+    setChain((prevChain) => {
+      const updatedChain = prevChain.filter(
+        (node) =>
+          !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("input"))
+      );
+      return [...updatedChain, ...filteredProducts];
+    });
 
-      console.log("Extracted output products:", output_products);
+    setConnections((prevConnections) => {
+      const newConnections = filteredProducts.map((product) => ({
+        from: { x: product.x + 75, y: product.y + 30 },
+        to: { x: selectedTask.x - 10, y: selectedTask.y + 30 },
+      }));
+      return [...prevConnections, ...newConnections];
+    });
 
-      // Filter and map products to include only those with deployment_state === 'V'
-      const filteredProducts = output_products
-        .filter((product) => product.deployment_state === "V")
-        .map((product) => ({
-          ...product,
-          side: "right", // Add side property
-        }));
-
-      // Set the fetched and filtered products as selected
-      setSelectedProduct(filteredProducts);
-      console.log("Selected output products set:", filteredProducts);
-    } else {
-      // Clear the selected products when toggling off
-      setSelectedProduct([]);
-      console.log("Selected output products cleared.");
-    }
-
-    // Update the visibility toggle
-    setShowProducts(shouldShow);
+    console.log("Input products refreshed:", filteredProducts);
   } catch (error) {
-    console.error("Error toggling output products:", error.response?.data || error.message);
+    console.error("Error refreshing input products:", error);
   }
 };
 
-  const removeFromInputTable = async (productId) => {
-    if (!selectedTask) return;
-  
-    try {
-      await axiosInstance.delete(`/api/tasks/${selectedTask.id}/products`, {
-        data: {
-          product_id: productId,
-          type: "input", // Specify the type of deployment to remove
-        },
-      });
-  
-      // Update the state to remove the product
-      setInputSettings((prev) => prev.filter((product) => product.id !== productId));
-    } catch (error) {
-      console.error("Error removing product from input table:", error);
+const refreshProductsRight = async () => {
+  if (!selectedTask) {
+    console.warn("No task selected for refreshing output products.");
+    return;
+  }
+
+  try {
+    const response = await axiosInstance.get(
+      `/api/tasks/${selectedTask.id}/contexts/${selectedTask.context_id}/products`
+    );
+    const { output_products } = response.data;
+
+    const filteredProducts = output_products
+      .filter((product) => product.deployment_state === "V")
+      .map((product, index) => ({
+        ...product,
+        type: "product",
+        x: selectedTask.x + 150, // Output products to the right
+        y: selectedTask.y + index * 70,
+        context_id: selectedTask.context_id,
+        key: `${selectedTask.context_id}-output-${product.instance_id}`,
+      }));
+      if (filteredProducts.length > 0) {
+        setSelectedProduct(filteredProducts[0]);
+        console.log("Selected Product updated:", filteredProducts[0]);
+      }
+    setChain((prevChain) => {
+      const updatedChain = prevChain.filter(
+        (node) =>
+          !(node.type === "product" && node.context_id === selectedTask.context_id && node.key?.includes("output"))
+      );
+      return [...updatedChain, ...filteredProducts];
+    });
+
+    setConnections((prevConnections) => {
+      const newConnections = filteredProducts.map((product) => ({
+        from: { x: selectedTask.x + 60, y: selectedTask.y + 30 },
+        to: { x: product.x + 75, y: product.y + 30 },
+      }));
+      return [...prevConnections, ...newConnections];
+    });
+
+    console.log("Output products refreshed:", filteredProducts);
+  } catch (error) {
+    console.error("Error refreshing output products:", error);
+  }
+};
+
+
+
+const toggleTaskDeploymentStatus = async (id, currentState, type) => {
+  const newState = currentState === "V" ? "X" : "V";
+
+  try {
+    const response = await axiosInstance.patch(
+      `/api/products/${selectedProduct.id}/instance/${selectedProduct.instance_id}/tasks`,
+      {
+        task_id: id,
+        state: newState,
+        type: type, // "input" or "output"
+        action: "update",
+      }
+    );
+
+    console.log(response.data.message);
+
+    // Update the local state
+    if (type === "input") {
+      setContextInputTasks((prev) =>
+        prev.map((task) =>
+          task.id === id ? { ...task, deployment_state: newState } : task
+        )
+      );
+    } else if (type === "output") {
+      setContextOutputTasks((prev) =>
+        prev.map((task) =>
+          task.id === id ? { ...task, deployment_state: newState } : task
+        )
+      );
     }
-  };
-  
+  } catch (error) {
+    console.error("Error toggling task deployment status:", error);
+  }
+};
+
+const toggleTasks = async (selectedProduct) => {
+  console.log("Selected Product in toggleTasks:", selectedProduct);
+
+  if (!selectedProduct) {
+    console.warn("No product selected for toggling input tasks.");
+    return;
+  }
+
+  const shouldShow = !selectedProduct.showInputTasks;
+  console.log("Toggling input tasks. Current state:", shouldShow);
+
+  try {
+    if (shouldShow) {
+      // Fetch input tasks
+      const response = await axiosInstance.get(
+        `/api/products/${selectedProduct.id}/instance/${selectedProduct.instance_id}/tasks`,
+        { params: { type: "input" } }
+      );
+      console.log("API response for input tasks:", response.data);
+
+      const inputTasks = response.data
+        .filter((task) => task.deployment_state === "V")
+        .map((task, index) => ({
+          ...task,
+          type: "task",
+          x: selectedProduct.x - 150, // Position input tasks to the left
+          y: selectedProduct.y + index * 70,
+          key: `${selectedProduct.id}-${task.context_id}-input`,
+        }));
+
+      // Update chain
+      setChain((prevChain) => {
+        const updatedChain = prevChain.filter(
+          (node) => !(node.type === "task" && node.context_id === selectedProduct.context_id && node.key?.includes("input"))
+        );
+        return [...updatedChain, ...inputTasks];
+      });
+
+      if (inputTasks.length > 0) {
+        setSelectedTask(inputTasks[0]);
+        console.log("Updated selectedTask:", inputTasks[0]);
+      } else {
+        setSelectedTask(null);
+        console.warn("No output tasks available to select.");
+      }
+
+      // Update connections
+      setConnections((prevConnections) => {
+        const newConnections = inputTasks.map((task) => ({
+          from: { x: selectedProduct.x - 10, y: selectedProduct.y + 30 },
+          to: { x: task.x + 45, y: task.y + 30 },
+        }));
+        return [...prevConnections, ...newConnections];
+      });
+
+      console.log("Input tasks added to chain:", inputTasks);
+    } else {
+      // Remove input tasks and connections
+      setChain((prevChain) =>
+        prevChain.filter(
+          (node) => !(node.type === "task" && node.context_id === selectedProduct.context_id && node.key.includes("input"))
+        )
+      );
+      setConnections((prevConnections) =>
+        prevConnections.filter(
+          (conn) =>
+            !chain.some(
+              (node) =>
+                node.type === "task" &&
+                node.context_id === selectedProduct.context_id &&
+                node.key.includes("input") &&
+                conn.to.x === node.x &&
+                conn.to.y === node.y + 30
+            )
+        )
+      );
+
+      console.log("Input tasks removed from chain.");
+    }
+
+    // Update showInputTasks state
+    setChain((prev) =>
+      prev.map((node) =>
+        node.id === selectedProduct.id
+          ? { ...node, showInputTasks: shouldShow }
+          : node
+      )
+    );
+  } catch (error) {
+    console.error("Error toggling input tasks:", error);
+  }
+};
+
+
+
+const toggleTasksRight = async (selectedProduct) => {
+  console.log("Selected Product in toggleTasksRight:", selectedProduct);
+
+  if (!selectedProduct || !selectedProduct.id || !selectedProduct.instance_id) {
+    console.warn("No valid product selected for toggling output tasks.");
+    return;
+  }
+
+  const shouldShow = !selectedProduct.showOutputTasks; // Determine toggle state
+  console.log("Toggling output tasks. Current state:", shouldShow);
+
+  try {
+    if (shouldShow) {
+      // Fetch output tasks from the backend
+      const response = await axiosInstance.get(
+        `/api/products/${selectedProduct.id}/instance/${selectedProduct.instance_id}/tasks`,
+        { params: { type: "output" } }
+      );
+      console.log("API response for output tasks:", response.data);
+
+      const outputTasks = response.data
+        .filter((task) => task.deployment_state === "V") // Only include deployed tasks
+        .map((task, index) => ({
+          ...task,
+          type: "task",
+          x: selectedProduct.x + 250, // Position to the right of the product
+          y: selectedProduct.y + index * 70, // Stack tasks vertically
+          key: `${selectedProduct.id}-${task.context_id}-output`,
+        }));
+
+      // Update the `chain` with the new tasks
+      setChain((prevChain) => {
+        console.log("Current Chain:", prevChain);
+        const updatedChain = prevChain.filter(
+          (node) =>
+            !(node.type === "task" &&
+              node.context_id === selectedProduct.context_id &&
+              node.key?.includes("output"))
+        );
+        return [...updatedChain, ...outputTasks];
+      });
+
+      // Set the `selectedTask` to the first output task if it exists
+      if (outputTasks.length > 0) {
+        setSelectedTask(outputTasks[0]);
+        console.log("Updated selectedTask:", outputTasks[0]);
+      } else {
+        setSelectedTask(null);
+        console.warn("No output tasks available to select.");
+      }
+
+      // Update connections
+      setConnections((prevConnections) => {
+        const newConnections = outputTasks.map((task) => ({
+          from: { x: selectedProduct.x + 110, y: selectedProduct.y + 30 },
+          to: { x: task.x + 45, y: task.y + 30 },
+        }));
+        return [...prevConnections, ...newConnections];
+      });
+
+      console.log("Output tasks added to chain:", outputTasks);
+    } else {
+      // Remove output tasks and connections
+      setChain((prevChain) =>
+        prevChain.filter(
+          (node) =>
+            !(node.type === "task" &&
+              node.context_id === selectedProduct.context_id &&
+              node.key.includes("output"))
+        )
+      );
+
+      setConnections((prevConnections) =>
+        prevConnections.filter(
+          (conn) =>
+            !chain.some(
+              (node) =>
+                node.type === "task" &&
+                node.context_id === selectedProduct.context_id &&
+                node.key.includes("output") &&
+                conn.to.x === node.x &&
+                conn.to.y === node.y + 30
+            )
+        )
+      );
+
+      console.log("Output tasks removed from chain.");
+    }
+
+    // Update the `showOutputTasks` state
+    setChain((prev) =>
+      prev.map((node) =>
+        node.id === selectedProduct.id
+          ? { ...node, showOutputTasks: shouldShow }
+          : node
+      )
+    );
+  } catch (error) {
+    console.error("Error toggling output tasks:", error);
+  }
+};
+
+const fetchTaskProducts = async (taskId, contextId) => {
+  try {
+    console.log(`Fetching products for task ${taskId} and context ${contextId}`);
+    const response = await axiosInstance.get(`/api/tasks/${taskId}/contexts/${contextId}/products`);
+    const { input_products, output_products } = response.data;
+    console.log("Fetched Input Products:", input_products);
+    console.log("Fetched Output Products:", output_products);
+    return { inputProducts: input_products, outputProducts: output_products };
+  } catch (error) {
+    console.error("Error fetching task products:", error);
+    return { inputProducts: [], outputProducts: [] }; // Fallback to empty arrays
+  }
+};
+
+const toggleSettings = async () => {
+  console.log(selectedTask)
+  if (!selectedTask) {
+    console.warn("No task selected for input settings.");
+    return;
+  }
+
+  console.log("Toggling Input Settings for Task:", selectedTask);
+
+
+  try {
+    const { inputProducts } = await fetchTaskProducts(selectedTask.id, selectedTask.context_id);
+    setContextInputSettings((prev) => ({
+      ...prev,
+      [selectedTask.context_id]: inputProducts, // Dynamically update input products for the context
+    }));
+    console.log("Updated Input Settings for Context:", inputProducts);
+    setShowSettings((prev) => !prev);
+  } catch (error) {
+    console.error("Error toggling input settings:", error);
+  }
+};
+
+const toggleSettingsRight = async () => {
+  if (!selectedTask) {
+    console.warn("No task selected for output settings.");
+    return;
+  }
+
+  console.log("Toggling Output Settings for Task:", selectedTask);
+
+  try {
+    const { outputProducts } = await fetchTaskProducts(selectedTask.id, selectedTask.context_id);
+    setContextOutputSettings((prev) => ({
+      ...prev,
+      [selectedTask.context_id]: outputProducts, // Dynamically update output products for the context
+    }));
+    console.log("Updated Output Settings for Context:", outputProducts);
+    setShowSettingsRight((prev) => !prev);
+  } catch (error) {
+    console.error("Error toggling output settings:", error);
+  }
+};
+
+
   
   return (
     <div className="app-container">
@@ -1432,22 +2029,14 @@ const toggleProductsright = async () => {
               setShowProductForm={setShowProductForm}
               
             />
-      <button
-        className="create-mega-task-btn"
-        onClick={() => setShowMegaTask(true)}
-      >
-        Create Mega Task
-      </button>
 
-      {/* Mega Task Window */}
-      <MegaTaskWindow
+      
+      <MegaTaskWindow_v2
         showMegaTask={showMegaTask}
         setShowMegaTask={setShowMegaTask}
         tasks={tasks}
         products={products}
         selectedTask={selectedTask}
-        isExpanded={isExpanded}
-        setExpanded={setExpanded}
         deployedInputProducts={deployedInputProducts}
         deployedOutputProducts={deployedOutputProducts}
         showProducts={showProducts}
@@ -1519,10 +2108,20 @@ const toggleProductsright = async () => {
         contextInputSettings={contextInputSettings}
         addProductToTask = {addProductToTask}
         handleProductSelection={handleProductSelection}  
-        toggleProductsRight={toggleProductsright}  
-        toggleProducts={toggleProducts}          
-      />     
-      
+        toggleProductsRight={toggleProductsRight}  
+        toggleProducts={toggleProducts} 
+        chain={chain}
+        setChain={setChain}
+        connections={connections}
+        setConnections={setConnections}
+        toggleTaskDeploymentStatus = {toggleTaskDeploymentStatus}
+        toggleTasks = {toggleTasks}
+        toggleTasksRight = {toggleTasksRight}
+        fetchProducts={fetchProducts}
+        fetchUpdates = {fetchUpdates}
+   
+
+      />
     </div>
     
     
