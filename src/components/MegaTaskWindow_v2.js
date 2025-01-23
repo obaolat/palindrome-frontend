@@ -5,7 +5,7 @@ import axios from "axios";
 import '../style/MegaTaskWindow_v2.css';
 
 const axiosInstance = axios.create({
-    baseURL: "http://127.0.0.1:5000/", // Flask backend URL
+    baseURL: "https://palindrome-backend-1.onrender.com", // Flask backend URL
 });
 
 const Dropdown = ({ options, onSelect }) => {
